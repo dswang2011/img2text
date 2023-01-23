@@ -8,59 +8,70 @@ from datasets import Dataset, load_from_disk
 import numpy as np
 
 
-def image_to_doc(image_path, adjust_share_bbox=True):
-    image, size = _load_image(image_path)
-    data = pytesseract.image_to_data(Image.open(image_path),output_type='dict')
 
-    texts = data['text']
-    page_nums = data['page_num']
-    block_nums = data['block_num']
-    line_nums = data['line_num']
-    x0s = data['left']
-    y0s = data['top']
-    hs = data['height']
-    ws = data['width']
+def json_to_doc(base, docid_page):
+    json_path = os.path.join(base, 'ocr_results/'+docid_page +'.json')
+    img_path = os.path.join(base, 'documents/'+docid_page +'.png')
 
-    # save to:
-    one_doc = {'tokens':[],'bboxes':[],'widths':[],'heights':[], 'seg_ids':[],'image':None}
+    with open(json_path, "r", encoding="utf8") as f:
+        data = json.load(f)
+    recognitionResults = data['recognitionResults']
+    # usually just one page
+    for page in recognitionResults:
+        # each line = block = segment 
+         # save to:
+        one_doc = {'tokens':[],'bboxes':[],'widths':[],'heights':[], 'seg_ids':[],'image':None}
 
-    encoding = feature_extractor(image)
-    one_doc['image'] = encoding.pixel_values[0]    # image object, get the first one, cause there is only one!
-    # one_doc['image'] = image
-    for i,word in enumerate(texts):
-        # token
-        token = word.strip()
-        if token=='': continue
-        # height and width
-        height, width = hs[i],ws[i]
-        # coordinate
-        x0 = x0s[i]
-        y0 = y0s[i]
-        x1 = x0 + width
-        y1 = y0 + height
-        # page, line, block, block_id
-        page_num, line_num, block_num = page_nums[i],line_nums[i], block_nums[i]
+        width = page['width']
+        height = page['height']
+        size = [width,height]
 
+        tokens = []
+        bboxes = []
+        seg_ids = []
+        widths = []
+        heights = []
+
+        seg_id = 0
+        for line in page['lines']:
+            cur_line_bboxes = []
+            text = line['text']
+            words = line['words']
+            # boundingBox = _normalize_bbox(line['boundingBox'],size)
+
+            words = [w for w in words if w["text"].strip() != ""]
+            if len(words) == 0:
+                continue
+            for word in words:
+                tokens.append(word['text'])
+                seg_ids.append(seg_id)
+                cur_line_bboxes.append(_normalize_bbox(word["boundingBox"], size))
+            cur_line_bboxes = _get_line_bbox(cur_line_bboxes)
+            bboxes.extend(cur_line_bboxes)
+            widths.extend([(x1-x0) for x0,y0,x1,y1 in cur_line_bboxes])
+            heights.extend([(y1-y0) for x0,y0,x1,y1 in cur_line_bboxes])
+        
+            seg_id +=1
+        pixel_values = _pixel_feature(img_path)
         # produce one sample
-        one_doc['tokens'].append(token)
-        one_doc['bboxes'].append(_normalize_bbox([x0,y0,x1,y1], size))
-        one_doc['seg_ids'].append(block_num)
-        one_doc['widths'].append(width)
-        one_doc['heights'].append(height)
+        one_doc['tokens'] = tokens
+        one_doc['bboxes'] = bboxes
+        one_doc['seg_ids']=seg_ids
+        one_doc['widths'] = widths
+        one_doc['heights'] = heights
+        one_doc['image'] = pixel_values
 
-    # adjust the shared box
-    if adjust_share_bbox:
-        one_doc = _adjust_shared_bbox(one_doc)
-    return one_doc
+        return one_doc
 
 
-def get_img2doc_data(img_dir):
+def get_json2doc_data(base_dir):
     res = {}    # a dict of dict, i.e., {docID_pageNO : {one_doc_info}}
-    for doc_idx, file in enumerate(sorted(os.listdir(img_dir))):
-        print('process:',doc_idx,file)
-        image_path = os.path.join(img_dir, file)
-        one_doc = image_to_doc(image_path)
-        docID_pageNO = file.replace(".png", "")
+    for doc_idx, file in enumerate(sorted(os.listdir(base_dir+'ocr_results'))):
+        # print('process json:',doc_idx,file)
+        json_path = os.path.join(base_dir, 'ocr_results', file)
+        one_doc = json_to_doc(base_dir,file.replace('.json',''))
+        
+        docID_pageNO = file.replace(".json", "")
         res[docID_pageNO] = one_doc
         # print(one_doc)
         # if doc_idx>50:
